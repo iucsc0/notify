@@ -2,8 +2,8 @@ name: CTFtime Discord Notifier
 
 on:
   schedule:
-    # GitHub Actions cron is always UTC. 02:00 UTC = 08:00 Bangladesh time (UTC+6).
-    - cron: "0 2 * * *"
+    # Runs every 30 minutes so "starting soon" and "live now" alerts are timely.
+    - cron: "*/30 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -23,6 +23,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NOTIFY_WINDOW_DAYS: "14"
+          REMINDER_MINUTES: "60"
         run: python ctftime_notifier.py
 
       - name: Commit updated state file
