@@ -16,6 +16,7 @@ import os
 import json
 import sys
 import time
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import urllib.request
@@ -62,6 +63,21 @@ def save_state(ids):
     STATE_FILE.write_text(json.dumps(sorted(ids)))
 
 
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def sanitize_text(text, max_len=300):
+    if not text:
+        return ""
+    text = HTML_TAG_RE.sub("", text)
+    # drop control/non-printable characters that can trip WAF filters
+    text = "".join(ch for ch in text if ch.isprintable() or ch in "\n\r\t")
+    text = text.strip()
+    if len(text) > max_len:
+        text = text[:max_len - 1].rstrip() + "…"
+    return text
+
+
 def format_embed(event):
     start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
     finish = datetime.fromisoformat(event["finish"].replace("Z", "+00:00"))
@@ -74,15 +90,17 @@ def format_embed(event):
         {"name": "Starts (UTC)", "value": start.strftime("%Y-%m-%d %H:%M"), "inline": False},
     ]
     if event.get("location"):
-        fields.append({"name": "Location", "value": event["location"], "inline": False})
+        fields.append({"name": "Location", "value": sanitize_text(event["location"], max_len=100), "inline": False})
 
     embed = {
-        "title": event.get("title", "Untitled CTF"),
+        "title": sanitize_text(event.get("title", "Untitled CTF"), max_len=250) or "Untitled CTF",
         "url": event.get("url") or event.get("ctftime_url"),
-        "description": (event.get("description") or "")[:300],
         "color": 0x2ECC71,
         "fields": fields,
     }
+    desc = sanitize_text(event.get("description"), max_len=300)
+    if desc:
+        embed["description"] = desc
     if event.get("logo"):
         embed["thumbnail"] = {"url": event["logo"]}
     return embed
