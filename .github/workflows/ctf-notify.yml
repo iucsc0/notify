@@ -22,7 +22,7 @@ jobs:
       - name: Run notifier
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          NOTIFY_WINDOW_DAYS: "14"
+          NOTIFY_WINDOW_DAYS: "1"
           REMINDER_MINUTES: "60"
         run: python ctftime_notifier.py
 
