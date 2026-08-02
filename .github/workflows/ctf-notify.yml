@@ -2,8 +2,8 @@ name: CTFtime Discord Notifier
 
 on:
   schedule:
-    # Runs once a day at 08:00 UTC. Adjust as you like.
-    - cron: "0 8 * * *"
+    # GitHub Actions cron is always UTC. 02:00 UTC = 08:00 Bangladesh time (UTC+6).
+    - cron: "0 2 * * *"
   workflow_dispatch: {}
 
 permissions:
