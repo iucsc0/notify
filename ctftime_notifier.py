@@ -35,7 +35,7 @@ import urllib.error
 
 CTFTIME_API = "https://ctftime.org/api/v1/events/"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-NOTIFY_WINDOW_DAYS = int(os.environ.get("NOTIFY_WINDOW_DAYS", "14"))
+NOTIFY_WINDOW_DAYS = int(os.environ.get("NOTIFY_WINDOW_DAYS", "1"))
 REMINDER_MINUTES = int(os.environ.get("REMINDER_MINUTES", "60"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "notified_ids.json"))
 
