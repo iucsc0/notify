@@ -78,16 +78,20 @@ def sanitize_text(text, max_len=300):
     return text
 
 
+BDT = timezone(timedelta(hours=6))
+
+
 def format_embed(event):
     start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
     finish = datetime.fromisoformat(event["finish"].replace("Z", "+00:00"))
     duration_h = round((finish - start).total_seconds() / 3600, 1)
+    start_bdt = start.astimezone(BDT)
 
     fields = [
         {"name": "Format", "value": event.get("format", "N/A"), "inline": True},
         {"name": "Weight", "value": str(event.get("weight", "N/A")), "inline": True},
         {"name": "Duration", "value": f"{duration_h}h", "inline": True},
-        {"name": "Starts (UTC)", "value": start.strftime("%Y-%m-%d %H:%M"), "inline": False},
+        {"name": "Starts (BDT)", "value": start_bdt.strftime("%Y-%m-%d %H:%M"), "inline": False},
     ]
     if event.get("location"):
         fields.append({"name": "Location", "value": sanitize_text(event["location"], max_len=100), "inline": False})
