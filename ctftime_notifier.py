@@ -41,7 +41,6 @@ STATE_FILE = Path(os.environ.get("STATE_FILE", "notified_ids.json"))
 
 # How far back to look for events that might still be ongoing right now.
 LOOKBACK_DAYS = 5
-MAX_DESC_LEN = 900
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -52,11 +51,9 @@ HEADERS = {
 
 BDT = timezone(timedelta(hours=6))
 
-LINK_RE = re.compile(r'<a\s+[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
-BREAK_RE = re.compile(r"<br\s*/?>|</p>|</div>", re.IGNORECASE)
 TAG_RE = re.compile(r"<[^>]+>")
-BLANK_LINES_RE = re.compile(r"\n{3,}")
 TEAM_SIZE_RE = re.compile(r"team\s*size[:\s\[]*([0-9]+\s*-\s*[0-9]+|[0-9]+)", re.IGNORECASE)
+DISCORD_RE = re.compile(r'(https?://discord(?:\.gg|\.com/invite)/[^\s"<>]+)', re.IGNORECASE)
 
 
 def fetch_events(start_ts, limit=60, retries=3):
@@ -94,21 +91,6 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps({k: sorted(v) for k, v in state.items()}))
 
 
-def clean_description(text, max_len=MAX_DESC_LEN):
-    """Turn CTFtime's HTML description into readable text, keeping links visible."""
-    if not text:
-        return ""
-    text = LINK_RE.sub(lambda m: f"{m.group(2).strip()} ({m.group(1).strip()})", text)
-    text = BREAK_RE.sub("\n", text)
-    text = TAG_RE.sub("", text)
-    text = text.replace("&amp;", "&").replace("&nbsp;", " ")
-    text = "".join(ch for ch in text if ch.isprintable() or ch == "\n")
-    text = BLANK_LINES_RE.sub("\n\n", text).strip()
-    if len(text) > max_len:
-        text = text[:max_len - 1].rstrip() + "…"
-    return text
-
-
 def sanitize_text(text, max_len=300):
     if not text:
         return ""
@@ -135,9 +117,9 @@ def format_embed(event, mode):
     organizers = ", ".join(o.get("name", "") for o in event.get("organizers", []) if o.get("name"))
     onsite = "Onsite" if event.get("onsite") else "Online"
     restrictions = event.get("restrictions") or "N/A"
-    participants = event.get("participants")
     raw_desc = event.get("description") or ""
     team_size_match = TEAM_SIZE_RE.search(raw_desc)
+    discord_match = DISCORD_RE.search(raw_desc)
 
     fields = [
         {"name": "Format", "value": event.get("format", "N/A"), "inline": True},
@@ -148,8 +130,6 @@ def format_embed(event, mode):
     ]
     if team_size_match:
         fields.append({"name": "Team size", "value": team_size_match.group(1), "inline": True})
-    if participants:
-        fields.append({"name": "Registered teams", "value": str(participants), "inline": True})
     if organizers:
         fields.append({"name": "Organizers", "value": sanitize_text(organizers, max_len=200), "inline": False})
     if event.get("location"):
@@ -161,6 +141,10 @@ def format_embed(event, mode):
         fields.append({"name": "Official site", "value": f"[Visit]({official_url})", "inline": True})
     if ctftime_url:
         fields.append({"name": "CTFtime page", "value": f"[Visit]({ctftime_url})", "inline": True})
+    if discord_match:
+        fields.append({"name": "Discord", "value": f"[Join]({discord_match.group(1)})", "inline": True})
+    if mode == "live" and event.get("live_feed"):
+        fields.append({"name": "Live scoreboard", "value": f"[Watch]({event['live_feed']})", "inline": True})
 
     if mode == "live":
         fields.append({"name": "Started (BDT)", "value": start_bdt.strftime("%Y-%m-%d %H:%M"), "inline": True})
@@ -181,9 +165,6 @@ def format_embed(event, mode):
         "color": color,
         "fields": fields,
     }
-    desc = clean_description(raw_desc)
-    if desc:
-        embed["description"] = desc
     if event.get("logo"):
         embed["thumbnail"] = {"url": event["logo"]}
     return embed
