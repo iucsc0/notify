@@ -26,15 +26,30 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 NOTIFY_WINDOW_DAYS = int(os.environ.get("NOTIFY_WINDOW_DAYS", "14"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "notified_ids.json"))
 
-HEADERS = {"User-Agent": "ctftime-discord-notifier/1.0"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
-def fetch_upcoming_events(limit=30):
+def fetch_upcoming_events(limit=30, retries=3):
     now = int(time.time())
     url = f"{CTFTIME_API}?limit={limit}&start={now}"
     req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode())
+
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                return json.loads(resp.read().decode())
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+            last_err = e
+            wait = 5 * attempt
+            print(f"CTFtime fetch attempt {attempt}/{retries} failed ({e}); retrying in {wait}s...", file=sys.stderr)
+            time.sleep(wait)
+    raise RuntimeError(f"Failed to fetch CTFtime events after {retries} attempts: {last_err}")
 
 
 def load_state():
