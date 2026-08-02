@@ -2,14 +2,25 @@
 """
 CTFtime -> Discord notifier.
 
-Fetches upcoming CTF events from the CTFtime API and posts any events
-starting within NOTIFY_WINDOW_DAYS to a Discord webhook, once each
-(tracked via a small JSON state file so we don't spam duplicates).
+Fetches CTF events from the CTFtime API and posts to a Discord webhook in
+three ways, each tracked separately so nothing gets posted twice:
+
+  1. UPCOMING      - a new CTF is found starting within NOTIFY_WINDOW_DAYS
+                      (posted once, as soon as it's discovered).
+  2. STARTING SOON - posted once, when the event is within REMINDER_MINUTES
+                      of its start time (a heads-up before it begins).
+  3. LIVE NOW       - posted once, the moment the event has actually started
+                      (or is caught already running), showing when it ends.
 
 Env vars:
   DISCORD_WEBHOOK_URL   - required, your Discord webhook URL
   NOTIFY_WINDOW_DAYS    - optional, default 14
+  REMINDER_MINUTES      - optional, default 60 (heads-up window before start)
   STATE_FILE            - optional, default "notified_ids.json"
+
+Note: precision of "starting soon" / "live now" depends on how often this
+script runs (see the GitHub Actions cron schedule). Running every 15-30
+minutes gives timely alerts; once a day only catches things in hindsight.
 """
 
 import os
@@ -25,7 +36,12 @@ import urllib.error
 CTFTIME_API = "https://ctftime.org/api/v1/events/"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 NOTIFY_WINDOW_DAYS = int(os.environ.get("NOTIFY_WINDOW_DAYS", "14"))
+REMINDER_MINUTES = int(os.environ.get("REMINDER_MINUTES", "60"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "notified_ids.json"))
+
+# How far back to look for events that might still be ongoing right now.
+LOOKBACK_DAYS = 5
+MAX_DESC_LEN = 900
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -34,10 +50,17 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+BDT = timezone(timedelta(hours=6))
 
-def fetch_upcoming_events(limit=30, retries=3):
-    now = int(time.time())
-    url = f"{CTFTIME_API}?limit={limit}&start={now}"
+LINK_RE = re.compile(r'<a\s+[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+BREAK_RE = re.compile(r"<br\s*/?>|</p>|</div>", re.IGNORECASE)
+TAG_RE = re.compile(r"<[^>]+>")
+BLANK_LINES_RE = re.compile(r"\n{3,}")
+TEAM_SIZE_RE = re.compile(r"team\s*size[:\s\[]*([0-9]+\s*-\s*[0-9]+|[0-9]+)", re.IGNORECASE)
+
+
+def fetch_events(start_ts, limit=60, retries=3):
+    url = f"{CTFTIME_API}?limit={limit}&start={start_ts}"
     req = urllib.request.Request(url, headers=HEADERS)
 
     last_err = None
@@ -54,23 +77,42 @@ def fetch_upcoming_events(limit=30, retries=3):
 
 
 def load_state():
-    if STATE_FILE.exists():
-        return set(json.loads(STATE_FILE.read_text()))
-    return set()
+    empty = {"upcoming": set(), "soon": set(), "live": set()}
+    if not STATE_FILE.exists():
+        return empty
+    raw = json.loads(STATE_FILE.read_text())
+    if isinstance(raw, list):  # oldest format
+        return {"upcoming": set(raw), "soon": set(), "live": set()}
+    return {
+        "upcoming": set(raw.get("upcoming", [])),
+        "soon": set(raw.get("soon", [])),
+        "live": set(raw.get("live", [])),
+    }
 
 
-def save_state(ids):
-    STATE_FILE.write_text(json.dumps(sorted(ids)))
+def save_state(state):
+    STATE_FILE.write_text(json.dumps({k: sorted(v) for k, v in state.items()}))
 
 
-HTML_TAG_RE = re.compile(r"<[^>]+>")
+def clean_description(text, max_len=MAX_DESC_LEN):
+    """Turn CTFtime's HTML description into readable text, keeping links visible."""
+    if not text:
+        return ""
+    text = LINK_RE.sub(lambda m: f"{m.group(2).strip()} ({m.group(1).strip()})", text)
+    text = BREAK_RE.sub("\n", text)
+    text = TAG_RE.sub("", text)
+    text = text.replace("&amp;", "&").replace("&nbsp;", " ")
+    text = "".join(ch for ch in text if ch.isprintable() or ch == "\n")
+    text = BLANK_LINES_RE.sub("\n\n", text).strip()
+    if len(text) > max_len:
+        text = text[:max_len - 1].rstrip() + "…"
+    return text
 
 
 def sanitize_text(text, max_len=300):
     if not text:
         return ""
-    text = HTML_TAG_RE.sub("", text)
-    # drop control/non-printable characters that can trip WAF filters
+    text = TAG_RE.sub("", text)
     text = "".join(ch for ch in text if ch.isprintable() or ch in "\n\r\t")
     text = text.strip()
     if len(text) > max_len:
@@ -78,31 +120,68 @@ def sanitize_text(text, max_len=300):
     return text
 
 
-BDT = timezone(timedelta(hours=6))
+def parse_dt(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def format_embed(event):
-    start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
-    finish = datetime.fromisoformat(event["finish"].replace("Z", "+00:00"))
+def format_embed(event, mode):
+    """mode is 'upcoming', 'soon', or 'live'."""
+    start = parse_dt(event["start"])
+    finish = parse_dt(event["finish"])
     duration_h = round((finish - start).total_seconds() / 3600, 1)
     start_bdt = start.astimezone(BDT)
+    finish_bdt = finish.astimezone(BDT)
+
+    organizers = ", ".join(o.get("name", "") for o in event.get("organizers", []) if o.get("name"))
+    onsite = "Onsite" if event.get("onsite") else "Online"
+    restrictions = event.get("restrictions") or "N/A"
+    participants = event.get("participants")
+    raw_desc = event.get("description") or ""
+    team_size_match = TEAM_SIZE_RE.search(raw_desc)
 
     fields = [
         {"name": "Format", "value": event.get("format", "N/A"), "inline": True},
         {"name": "Weight", "value": str(event.get("weight", "N/A")), "inline": True},
         {"name": "Duration", "value": f"{duration_h}h", "inline": True},
-        {"name": "Starts (BDT)", "value": start_bdt.strftime("%Y-%m-%d %H:%M"), "inline": False},
+        {"name": "Mode", "value": onsite, "inline": True},
+        {"name": "Restrictions", "value": sanitize_text(restrictions, max_len=100) or "N/A", "inline": True},
     ]
+    if team_size_match:
+        fields.append({"name": "Team size", "value": team_size_match.group(1), "inline": True})
+    if participants:
+        fields.append({"name": "Registered teams", "value": str(participants), "inline": True})
+    if organizers:
+        fields.append({"name": "Organizers", "value": sanitize_text(organizers, max_len=200), "inline": False})
     if event.get("location"):
         fields.append({"name": "Location", "value": sanitize_text(event["location"], max_len=100), "inline": False})
 
+    official_url = event.get("url")
+    ctftime_url = event.get("ctftime_url")
+    if official_url and ctftime_url and official_url != ctftime_url:
+        fields.append({"name": "Official site", "value": f"[Visit]({official_url})", "inline": True})
+    if ctftime_url:
+        fields.append({"name": "CTFtime page", "value": f"[Visit]({ctftime_url})", "inline": True})
+
+    if mode == "live":
+        fields.append({"name": "Started (BDT)", "value": start_bdt.strftime("%Y-%m-%d %H:%M"), "inline": True})
+        fields.append({"name": "Ends (BDT)", "value": finish_bdt.strftime("%Y-%m-%d %H:%M"), "inline": True})
+        title_prefix, color = "🔴 LIVE NOW: ", 0xE74C3C
+    elif mode == "soon":
+        fields.append({"name": "Starts (BDT)", "value": start_bdt.strftime("%Y-%m-%d %H:%M"), "inline": True})
+        fields.append({"name": "Ends (BDT)", "value": finish_bdt.strftime("%Y-%m-%d %H:%M"), "inline": True})
+        title_prefix, color = "⏰ STARTING SOON: ", 0xF39C12
+    else:
+        fields.append({"name": "Starts (BDT)", "value": start_bdt.strftime("%Y-%m-%d %H:%M"), "inline": True})
+        fields.append({"name": "Ends (BDT)", "value": finish_bdt.strftime("%Y-%m-%d %H:%M"), "inline": True})
+        title_prefix, color = "", 0x2ECC71
+
     embed = {
-        "title": sanitize_text(event.get("title", "Untitled CTF"), max_len=250) or "Untitled CTF",
-        "url": event.get("url") or event.get("ctftime_url"),
-        "color": 0x2ECC71,
+        "title": title_prefix + (sanitize_text(event.get("title", "Untitled CTF"), max_len=230) or "Untitled CTF"),
+        "url": ctftime_url or official_url,
+        "color": color,
         "fields": fields,
     }
-    desc = sanitize_text(event.get("description"), max_len=300)
+    desc = clean_description(raw_desc)
     if desc:
         embed["description"] = desc
     if event.get("logo"):
@@ -131,39 +210,58 @@ def post_to_discord(embeds):
         raise
 
 
+def post_batches(events, mode, state):
+    if not events:
+        return
+    for i in range(0, len(events), 10):
+        batch = events[i:i + 10]
+        embeds = [format_embed(e, mode) for e in batch]
+        post_to_discord(embeds)
+        for e in batch:
+            state[mode].add(str(e["id"]))
+        print(f"Posted {len(batch)} '{mode}' event(s) to Discord.")
+
+
 def main():
     if not WEBHOOK_URL:
         print("ERROR: DISCORD_WEBHOOK_URL is not set.", file=sys.stderr)
         sys.exit(1)
 
-    events = fetch_upcoming_events()
-    notified = load_state()
-    cutoff = datetime.now(timezone.utc) + timedelta(days=NOTIFY_WINDOW_DAYS)
+    now = datetime.now(timezone.utc)
+    lookback_ts = int((now - timedelta(days=LOOKBACK_DAYS)).timestamp())
+    events = fetch_events(lookback_ts)
 
-    new_events = []
+    state = load_state()
+    cutoff = now + timedelta(days=NOTIFY_WINDOW_DAYS)
+    reminder_cutoff = now + timedelta(minutes=REMINDER_MINUTES)
+
+    live_events, soon_events, upcoming_events = [], [], []
+
     for event in events:
         eid = str(event["id"])
-        start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
-        if eid in notified:
-            continue
-        if start > cutoff:
-            continue
-        new_events.append(event)
+        start = parse_dt(event["start"])
+        finish = parse_dt(event["finish"])
 
-    if not new_events:
-        print("No new upcoming CTFs to notify.")
+        if start <= now < finish:
+            if eid not in state["live"]:
+                live_events.append(event)
+        elif now < start <= reminder_cutoff:
+            if eid not in state["soon"]:
+                soon_events.append(event)
+            if eid not in state["upcoming"]:
+                state["upcoming"].add(eid)  # don't double-post as "upcoming" too
+        elif now < start <= cutoff:
+            if eid not in state["upcoming"]:
+                upcoming_events.append(event)
+
+    if not (live_events or soon_events or upcoming_events):
+        print("Nothing new to notify.")
         return
 
-    # Discord allows up to 10 embeds per message
-    for i in range(0, len(new_events), 10):
-        batch = new_events[i:i + 10]
-        embeds = [format_embed(e) for e in batch]
-        post_to_discord(embeds)
-        for e in batch:
-            notified.add(str(e["id"]))
-        print(f"Posted {len(batch)} event(s) to Discord.")
-
-    save_state(notified)
+    post_batches(live_events, "live", state)
+    post_batches(soon_events, "soon", state)
+    post_batches(upcoming_events, "upcoming", state)
+    save_state(state)
 
 
 if __name__ == "__main__":
