@@ -37,7 +37,7 @@ Posts upcoming CTFs from [CTFtime](https://ctftime.org) to a Discord channel, on
 6. Done. It'll run automatically every day at 08:00 UTC from then on.
 
 ## Customize
-- **Notification window**: edit `NOTIFY_WINDOW_DAYS` in the workflow file (default 14 days out).
+- **Notification window**: edit `NOTIFY_WINDOW_DAYS` in the workflow file (default 1 day out).
 - **Reminder window**: edit `REMINDER_MINUTES` in the workflow file (default 60 minutes before start).
 - **Schedule**: edit the `cron` line in the workflow (currently every 30 minutes: `*/30 * * * *`). Run more often for tighter timing, less often to save minutes.
 - **Filter by weight/format**: add a filter in `main()` in `ctftime_notifier.py`, e.g. skip events with `weight` below some threshold.
