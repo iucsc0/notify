@@ -94,7 +94,10 @@ def post_to_discord(embeds):
     req = urllib.request.Request(
         WEBHOOK_URL,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": HEADERS["User-Agent"],
+        },
         method="POST",
     )
     try:
