@@ -38,6 +38,11 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 NOTIFY_WINDOW_DAYS = int(os.environ.get("NOTIFY_WINDOW_DAYS", "1"))
 REMINDER_MINUTES = int(os.environ.get("REMINDER_MINUTES", "60"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "notified_ids.json"))
+MENTION_MODES = {
+    m.strip().lower()
+    for m in os.environ.get("MENTION_MODES", "upcoming,soon,live").split(",")
+    if m.strip()
+}
 
 # How far back to look for events that might still be ongoing right now.
 LOOKBACK_DAYS = 5
@@ -170,8 +175,11 @@ def format_embed(event, mode):
     return embed
 
 
-def post_to_discord(embeds):
+def post_to_discord(embeds, mention_everyone=False):
     payload = {"embeds": embeds}
+    if mention_everyone:
+        payload["content"] = "@everyone"
+        payload["allowed_mentions"] = {"parse": ["everyone"]}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         WEBHOOK_URL,
@@ -194,10 +202,11 @@ def post_to_discord(embeds):
 def post_batches(events, mode, state):
     if not events:
         return
+    mention = mode in MENTION_MODES
     for i in range(0, len(events), 10):
         batch = events[i:i + 10]
         embeds = [format_embed(e, mode) for e in batch]
-        post_to_discord(embeds)
+        post_to_discord(embeds, mention_everyone=mention)
         for e in batch:
             state[mode].add(str(e["id"]))
         print(f"Posted {len(batch)} '{mode}' event(s) to Discord.")
