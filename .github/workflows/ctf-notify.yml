@@ -24,6 +24,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NOTIFY_WINDOW_DAYS: "1"
           REMINDER_MINUTES: "60"
+          MENTION_MODES: "upcoming,soon,live"
         run: python ctftime_notifier.py
 
       - name: Commit updated state file
