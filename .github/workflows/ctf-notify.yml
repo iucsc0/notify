@@ -25,6 +25,7 @@ jobs:
           NOTIFY_WINDOW_DAYS: "1"
           REMINDER_MINUTES: "60"
           MENTION_MODES: "upcoming,soon,live"
+          CTF_ROLE_ID: ${{ secrets.CTF_ROLE_ID }}
         run: python ctftime_notifier.py
 
       - name: Commit updated state file
