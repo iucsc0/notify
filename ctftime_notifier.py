@@ -17,6 +17,9 @@ Env vars:
   NOTIFY_WINDOW_DAYS    - optional, default 14
   REMINDER_MINUTES      - optional, default 60 (heads-up window before start)
   STATE_FILE            - optional, default "notified_ids.json"
+  CTF_ROLE_ID           - optional, numeric ID of the "ctf_player" role to ping
+                          (Discord needs the ID, not the name). If unset, the
+                          bot posts without pinging anyone.
 
 Note: precision of "starting soon" / "live now" depends on how often this
 script runs (see the GitHub Actions cron schedule). Running every 15-30
@@ -38,6 +41,7 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 NOTIFY_WINDOW_DAYS = int(os.environ.get("NOTIFY_WINDOW_DAYS", "1"))
 REMINDER_MINUTES = int(os.environ.get("REMINDER_MINUTES", "60"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "notified_ids.json"))
+CTF_ROLE_ID = os.environ.get("CTF_ROLE_ID", "").strip()
 MENTION_MODES = {
     m.strip().lower()
     for m in os.environ.get("MENTION_MODES", "upcoming,soon,live").split(",")
@@ -175,11 +179,12 @@ def format_embed(event, mode):
     return embed
 
 
-def post_to_discord(embeds, mention_everyone=False):
+def post_to_discord(embeds, mention_role=False):
     payload = {"embeds": embeds}
-    if mention_everyone:
-        payload["content"] = "@everyone"
-        payload["allowed_mentions"] = {"parse": ["everyone"]}
+    if mention_role and CTF_ROLE_ID:
+        payload["content"] = f"<@&{CTF_ROLE_ID}>"
+        # Only allow this one role to be pinged (never @everyone/@here/users).
+        payload["allowed_mentions"] = {"roles": [CTF_ROLE_ID]}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         WEBHOOK_URL,
@@ -206,7 +211,7 @@ def post_batches(events, mode, state):
     for i in range(0, len(events), 10):
         batch = events[i:i + 10]
         embeds = [format_embed(e, mode) for e in batch]
-        post_to_discord(embeds, mention_everyone=mention)
+        post_to_discord(embeds, mention_role=mention)
         for e in batch:
             state[mode].add(str(e["id"]))
         print(f"Posted {len(batch)} '{mode}' event(s) to Discord.")
@@ -216,6 +221,8 @@ def main():
     if not WEBHOOK_URL:
         print("ERROR: DISCORD_WEBHOOK_URL is not set.", file=sys.stderr)
         sys.exit(1)
+    if not CTF_ROLE_ID:
+        print("WARNING: CTF_ROLE_ID is not set; posting without a role ping.", file=sys.stderr)
 
     now = datetime.now(timezone.utc)
     lookback_ts = int((now - timedelta(days=LOOKBACK_DAYS)).timestamp())
